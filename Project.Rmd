@@ -1,0 +1,154 @@
+---
+title: "Practical Machine Learning Project"
+author: "Jose Gonzalez"
+date: "31 décembre 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Introduction
+The purpose of this project is to conceive a model to predict the type of performed activity based on a set of data coming from different sensors.
+More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+#Getting and cleaning data
+The data was downloaded from the following sources:
+
+* Training: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+* Testing: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+We load the datasets into R
+```{r cache=TRUE}
+training<-read.csv("pml-training.csv")
+testing<-read.csv("pml-testing.csv")
+```
+
+##Exploratory data analysis
+We can have a quick look at the training set, to assess it size and get the number of variables.
+```{r}
+dim(training)
+str(training, list.len=30)
+table(training$classe)
+```
+It appears that there are some variables with N/A data. And ther are also variables which appear to contain "administrative" information.
+There is a majority of A classe activities.
+
+##Data Cleaning
+The first 7 variables appear to be "administrative" information. It seems very unlikely that these can bring information about the type of activity being performed. The rest of te variables do appear to contain sensor based information that might be relevant for deriving the activity being performed.
+```{r}
+training <- training[, 8:160]
+testing  <- testing[, 8:160]
+```
+
+Remove columns which have more than 50% of N/A values. We estimate just a low rate of valid value should not be able to bring much to the prediction algorithm.
+```{r}
+is_data  <- apply(!is.na(training), 2, sum) > length(training[,1])*0.5
+training <- training[, is_data]
+testing  <- testing[, is_data]
+```
+
+#Prediction Model
+
+##Partitioning of training data
+We partition the training set in order to be able to do cross-validation.
+The partition is based on the classe variable with 60% retained for training and 40% for crossvalidation.
+
+```{r}
+library(caret)
+set.seed(3141592)
+inTrain <- createDataPartition(y=training$classe, p=0.60, list=FALSE)
+train1  <- training[inTrain,]
+train2  <- training[-inTrain,]
+dim(train1)
+```
+
+##Removal of near zero covariates
+We will also remove the "near zero covariates"
+```{r}
+nzv_cols <- nearZeroVar(train1)
+if(length(nzv_cols) > 0) {
+  train1 <- train1[, -nzv_cols]
+  train2 <- train2[, -nzv_cols]
+}
+dim(train1)
+```
+
+##Quick model for assessing variable importance
+We will try through a quick random forest classification to have an estimation of the variable importance
+```{r quick_rf_model, cache=TRUE}
+library(randomForest)
+set.seed(3141592)
+fitModel <- randomForest(classe~., data=train1, importance=TRUE, ntree=100)
+varImpPlot(fitModel)
+```
+
+We select the 10 first variables with most importance
+```{r}
+importance<-fitModel$importance
+importance<-importance[order(-importance[,6]),]
+rownames(importance[1:10,])
+```
+
+As an example, we can plot the classe on the training set based on the two most important variables. The plot shows that a quick classification can be done based on just these two variables.
+```{r}
+qplot(roll_belt, roll_forearm, colour=classe, data=train1)
+```
+
+And we can show a feature plot, limited to the first 3 variables (for readability purposes)
+```{r}
+featurePlot(x = train1[,rownames(importance[1:3,])], y = train1$classe, pch = ".", main = "Feature plot",plot="pairs")
+```
+
+We now create a formula with those variables
+```{r}
+myFormula<-paste(rownames(importance[1:10,]),collapse="+")
+myFormula<-paste("classe~",myFormula,sep="")
+myFormula
+```
+
+##Final model
+Based on the formula derived from variable importance in the previous section, we can create a more complex (with more iterations and trees) random forest model.
+```{r full_rf_model, cache=TRUE}
+set.seed(3141592)
+fitModel <- train(as.formula(myFormula),
+                  data=train1,
+                  method="rf",
+                  trControl=trainControl(method="cv",number=2),
+                  prox=TRUE,
+                  verbose=TRUE,
+                  allowParallel=TRUE)
+```
+
+#Cross-Validation
+
+##Prediction quality on training set
+```{r}
+predictions <- predict(fitModel, newdata=train1)
+confusionMat <- confusionMatrix(predictions, train1$classe)
+confusionMat
+```
+Prediction is perfect on training set, despite having only retained 10 covariates for the prediction.
+
+##Prediction quality on validation set
+```{r}
+predictions <- predict(fitModel, newdata=train2)
+confusionMat <- confusionMatrix(predictions, train2$classe)
+confusionMat
+```
+Prediction on validation set has a 98.2% accuracy.
+
+#Estimation of the expected out of sample error
+The estimated out of sample error is 1.7%
+```{r}
+1-confusionMat$overall[1] #1-accuracy
+```
+
+
+#Prediction on test set
+```{r}
+predictions<-predict(fitModel,newdata = testing)
+predictions
+```
+
